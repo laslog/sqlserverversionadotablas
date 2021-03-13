@@ -1,0 +1,241 @@
+function versio_delta(data) {
+  var app = SpreadsheetApp;
+  var as = app.getActiveSpreadsheet().getActiveSheet();
+  var stg_table = as.getRange(2,1).getValue();
+  var pre_table = as.getRange(2,4).getValue();
+  var datastg = as.getRange(5,1,data.length-3).getValues();
+  var pkstg = as.getRange(5, 1, data.length-3,2).getValues();;
+  var preSchema = pre_table.split(".")[0];
+  var preTableName = pre_table.split(".")[1];
+  var preTableLength = preTableName.length;
+  var campos= "";
+ var sp = "CREATE PROCEDURE " + preSchema + ".[sp_load_"+preTableName.slice(1,preTableLength-1)+"]";
+ sp += "\n" +" @startDate VARCHAR(8)," + "\n" ;
+ sp += "\n" +" @FileType VARCHAR(8)," + "\n" ;
+ sp += "\n" +"@ClubCode  VARCHAR(6)" + "\n" +"AS"+ "\n";
+ sp +="DECLARE @DtSlice int = CONVERT(int, @startDate),"+"\n";
+ sp +="@varFileType VARCHAR(6) = upper(trim(@FileType)),"+ "\n";
+ sp += "@IdClub  int  = (SELECT idclub_file FROM [sta_gen_sga].[STT_Clubes_Asist] WHERE idclub= SUBSTRING(@ClubCode,4,6) GROUP BY idclub_file)"+ "\n";
+ sp +="BEGIN"+ "\n"+"BEGIN"+ "\n";
+    //---------Parte del REPROCESO-------------
+  var repro = "UPDATE " + pre_table + "------ Updateamos todos los fechafin > fecha de slice y los ponemos a infinito"+"\n";
+  repro +="SET FecFinVig = 99991231" + "\n" + "WHERE" +"\n"+ "FecFinVig >= @DtSlice AND FecFinVig <> 99991231 AND idclub = @IdClub" +"\n" + "END"+"\n" + "BEGIN "+"\n" ;
+  repro +="DELETE FROM "+pre_table+ "WHERE FecIniVig >= @DtSlice AND idclub = @IdClub"+"\n" + "END"+"\n" ;
+  sp +=repro;
+  //---------Parte de la CARGA NORMAL-------------
+ var TablaStaging ="BEGIN"+ "\n" +"WITH TablaStaging "+"\n"+" AS"+"\n"+"(      SELECT"+"\n";
+ // -------------------- del ID Y DEL CAMPO de la tablestaging  -------------------------------------
+ var ID = "CONCAT("
+ var CAMPO =",CONCAT("
+ var primero=0;
+ for (var i=0; pkstg[i][1]==1;i+=1){
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    var pipe = "";
+    if(i==0){pipe = "";} else {pipe =",'|'," ;}
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+       ID+= pipe+ nombrecampostg;
+    } else
+    {
+     ID+ pipe + "TRIM("+nombrecampostg +")" ;
+    }
+  } ID+= ") AS ID" +"\n";
+   for (var i=0; i<datastg.length;i+=1){
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    if (pkstg[i][1]==1)
+      {
+        nombrecampostg ="";
+      }
+    else 
+      {
+       nombrecampostg = datastg[i][0].slice(inistg,finstg);
+       }
+    var pipe = "";
+    if(nombrecampostg =="" ||(pkstg[i][1]!=1 && pkstg[i-1][1]==1) ){pipe = "";} else {pipe =",'|'," ;}
+    
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+       CAMPO+= pipe+ nombrecampostg;
+    } else
+    {
+     CAMPO+= pipe + "TRIM("+nombrecampostg +")" ;
+    }
+  } CAMPO+= ") AS CAMPO" +  "\n";
+ // -------------------- Resto de la tablestaging -------------------------------------
+  
+  for (var i=0; i<datastg.length;i+=1){
+
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+      campos += "," + nombrecampostg + " AS "+ nombrecampopre + "\n";
+    } else
+    {
+     campos += "," + "TRIM("+nombrecampostg +")"+ " AS "+ nombrecampopre + "\n";
+    }
+  }
+  TablaStaging +=ID+CAMPO+ campos + ",@DtSlice	AS [DtSlice]"  + "\n"+",GETDATE() AS [DtAudit]" + "\n"+ "FROM "+stg_table+" WHERE [IdClub] = @IdClub"+ "\n"+" )" +  "\n";
+  sp +=TablaStaging;
+
+ // -------------------- EMPIEZA EL INSERT  ------------------------------------- 
+ var ins = " INSERT INTO " + pre_table +  "\n";
+  ins += "SELECT"+"\n";
+   for (var i=0; i<datastg.length;i+=1){
+    var coma = "";
+    if(i==0){coma = "";} else {coma = ",";}
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    ins+= coma + "ACT."+nombrecampopre +"\n";
+   }
+  ins+= ",ACT.[DtSlice] AS FecIniVig" + "\n"+ ",99991231      AS FecFinVig"  + "\n"+ ",GETDATE()     AS [DtAudit]"  + "\n"+  "FROM TablaStaging AS ACT" + "\n"+ "LEFT JOIN"	+ "\n"+ "(	"+ "\n"+"SELECT "+ "\n";
+ // --------------------PARTE del ID Y DEL CAMPO de HIST   -------------------------------------
+ var ID = "CONCAT("
+ var CAMPO =",CONCAT("
+ var primero=0;
+ for (var i=0; pkstg[i][1]==1;i+=1){
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    var pipe = "";
+    if(i==0){pipe = "";} else {pipe =",'|'," ;}
+    ID+= pipe+ nombrecampopre;
+    }
+    ID+= ") AS ID" +"\n";
+
+  for (var i=0; i<datastg.length;i+=1){
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    if (pkstg[i][1]==1)
+      {
+        nombrecampopre ="";
+      }
+    else 
+      {
+       nombrecampopre = data[i][0].slice(inipre,finpre);
+       }
+    var pipe = "";
+    if(nombrecampopre =="" ||(pkstg[i][1]!=1 && pkstg[i-1][1]==1) ){pipe = "";} else {pipe =",'|'," ;}
+    CAMPO+= pipe+ nombrecampopre;
+  } CAMPO+= ") AS CAMPO" +  "\n"; 
+ ins+= ID+CAMPO + ",*"+"\n"+"FROM "+ pre_table + " \n" + "WHERE FecFinVig = 99991231"+  "\n"+"AND [IdClub] = @IdClub"+  "\n"+") AS HIST"+  "\n"+"ON ACT.ID= HIST.ID"+  "\n"+"WHERE HIST.ID IS NULL							 ---- Insertamos los ids nuevos"+  "\n"+ "OR (											 ---- y los valores asociados a los ids "+  "\n"+"HIST.ID = ACT.ID                             ---- que ya estaban dados de alta"+  "\n"+"	AND HIST.CAMPO<>ACT.CAMPO"+  "\n"+"		)";
+ ins+="	END"+  "\n" +"BEGIN"+ "\n";
+ sp +=   ins;
+ // -------------------- EMPIEZA EL UPDATE  ------------------------------------- 
+ sp+="IF @varFileType = 'FULL'"+"\n"
+ var upd= "UPDATE " + pre_table +"---- updateamos la fechafin de los registros con cambios en los valores asociados a los ids" + "\n" + "SET FecFinVig = COALESCE(ACT.DtSlice, @DtSlice)  ---- o los ids que se han dado de baja" + "\n" + "	FROM " + "\n" + "(" + "\n" + "SELECT" + "\n";
+ var ID = "CONCAT(";
+ var CAMPO =",CONCAT(";
+ var campos ="";
+ for (var i=0; pkstg[i][1]==1;i+=1){
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    var pipe = "";
+    if(i==0){pipe = "";} else {pipe =",'|'," ;}
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+       ID+= pipe+ nombrecampostg;
+    } else
+    {
+     ID+= pipe + "TRIM("+nombrecampostg +")" ;
+    }
+  } ID+= ") AS ID" +"\n";
+   for (var i=0; i<datastg.length;i+=1){
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    if (pkstg[i][1]==1)
+      {
+        nombrecampostg ="";
+      }
+    else 
+      {
+       nombrecampostg = datastg[i][0].slice(inistg,finstg);
+       }
+    var pipe = "";
+    if(nombrecampostg =="" ||(pkstg[i][1]!=1 && pkstg[i-1][1]==1) ){pipe = "";} else {pipe =",'|'," ;}
+    
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+       CAMPO+= pipe+ nombrecampostg;
+    } else
+    {
+     CAMPO+= pipe + "TRIM("+nombrecampostg +")" ;
+    }
+  } CAMPO+= ") AS CAMPO" +  "\n";
+  for (var i=0; i<datastg.length;i+=1){
+
+    var inistg =datastg[i][0].trim().indexOf("[");
+    var finstg =datastg[i][0].trim().indexOf("]")+1;
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampostg = datastg[i][0].slice(inistg,finstg);
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    if ((datastg[i][0].indexOf("[varchar]") ==-1)&&(datastg[i][0].indexOf("[char]") ==-1)&&(datastg[i][0].indexOf("[nvarchar]") ==-1)){
+      campos += "," + nombrecampostg + " AS "+ nombrecampopre + "\n";
+    } else
+    {
+     campos += "," + "TRIM("+nombrecampostg +")"+ " AS "+ nombrecampopre + "\n";
+    }
+  }
+  upd +=ID+CAMPO+ campos + ",@DtSlice	AS [DtSlice]"  + "\n"+",GETDATE() AS [DtAudit]" + "\n"+ "FROM "+stg_table+ " WHERE [IdClub] = @IdClub"+ "\n"+" ) AS ACT" +  "\n"+ "RIGHT JOIN"+  "\n"+ pre_table + "AS HIST" +  "\n";
+  upd+="ON ACT.ID=";
+ var ID = "CONCAT("
+ var CAMPO =",CONCAT("
+ var primero=0;
+ for (var i=0; pkstg[i][1]==1;i+=1){
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    var pipe = "";
+    if(i==0){pipe = "";} else {pipe =",'|'," ;}
+    ID+= pipe+ "HIST."+nombrecampopre;
+ }
+ID+= ")" +"\n";
+upd+=ID + "WHERE" + "\n"+ "			HIST.FecFinVig = 99991231"+ "\n"+"	AND HIST.[IdClub] = @IdClub"+ "\n"+"AND"+ "\n"+"	((	";
+upd+="ACT.ID=";
+var ID = "CONCAT("
+ var CAMPO ="CONCAT("
+ var primero=0;
+ for (var i=0; pkstg[i][1]==1;i+=1){
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    var pipe = "";
+    if(i==0){pipe = "";} else {pipe =",'|'," ;}
+    ID+= pipe+ "HIST."+nombrecampopre;
+ }
+ID+= ")" +"\n";
+upd+=ID +"\n" +"AND ACT.campo <> " ;
+for (var i=0; i<datastg.length;i+=1){
+    var inipre =data[i][0].trim().indexOf("[");
+    var finpre =data[i][0].trim().indexOf("]")+1;
+    var nombrecampopre = data[i][0].slice(inipre,finpre);
+    if (pkstg[i][1]==1)
+      {
+        nombrecampopre ="";
+      }
+    else 
+      {
+       nombrecampopre = "HIST."+ data[i][0].slice(inipre,finpre);
+       }
+    var pipe = "";
+    if(nombrecampopre =="" ||(pkstg[i][1]!=1 && pkstg[i-1][1]==1) ){pipe = "";} else {pipe =",'|'," ;}
+    CAMPO+= pipe + nombrecampopre;
+  } CAMPO+= ")" + "\n"; 
+upd+=CAMPO + "\n" + ")"+ "\n" ;
+updfull= "OR ACT.ID IS NULL "+ "\n" + ")"+ "\n";
+ sp+= upd+updfull+" ELSE " + "\n" + upd + "--OR ACT.ID IS NULL "+ "\n" + ")";
+ sp+= "\n" +  "END" + "\n" +"END" + "\n"+ "GO";
+  // -------------------- EMPIEZA EL GRANT  ------------------------------------- 
+ var grant = ""
+ grant+= "GRANT EXEC ON " + preSchema + ".[sp_load_"+preTableName.slice(1,preTableLength-1)+"] " + "TO stadium_svc";
+  sp+= "\n" + grant
+ return sp
+}
